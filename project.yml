@@ -12,7 +12,11 @@ targets:
       PRODUCT_BUNDLE_IDENTIFIER: com.ibaalpremium.p12changer
       MARKETING_VERSION: "1.0"
       CURRENT_PROJECT_VERSION: "1"
-      CODE_SIGN_IDENTITY: ""
-      CODE_SIGNING_REQUIRED: "NO"
-      CODE_SIGNING_ALLOWED: "NO"
-      ENABLE_BITCODE: "NO"
+      
+      # 1. Instruksi otomatis membuat Info.plist
+      GENERATE_INFOPLIST_FILE: "YES"
+      
+      # 2. Gunakan Ad-Hoc Code Signing (Bypass khusus IPA)
+      CODE_SIGN_IDENTITY: "-"
+      CODE_SIGNING_REQUIRED: "YES"
+      CODE_SIGNING_ALLOWED: "YES"
