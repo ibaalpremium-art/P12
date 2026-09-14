@@ -1,7 +1,6 @@
 name: P12Changer
 options:
   bundleIdPrefix: com.ibaalpremium
-  xcodeVersion: "15.4" # Memaksa XcodeGen membuat format Xcode 15
 targets:
   P12Changer:
     type: application
