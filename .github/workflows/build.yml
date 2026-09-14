@@ -1,4 +1,4 @@
-name: Build Cert Pack Changer v2.0
+name: Build Cert Pack Changer v2.1
 
 on:
   push:
@@ -26,7 +26,7 @@ jobs:
         run: |
           mkdir -p Sources
 
-          # 1. LaunchScreen Storyboard (Wajib untuk menghentikan layar nge-zoom di iOS)
+          # 1. LaunchScreen Storyboard (Mencegah tampilan nge-zoom)
           cat << 'EOF' > Sources/LaunchScreen.storyboard
           <?xml version="1.0" encoding="UTF-8"?>
           <document type="com.apple.InterfaceBuilder3.CocoaTouch.Storyboard.XIB" version="3.0" toolsVersion="22505" targetRuntime="iOS.CocoaTouch" propertyAccessControl="none" useAutolayout="YES" launchScreen="YES" useTraitCollections="YES" useSafeAreas="YES" colorMatched="YES" initialViewController="01J-lp-oVM">
@@ -165,11 +165,41 @@ jobs:
           }
           EOF
 
-          # 5. Tampilan SwiftUI Khusus Paket ZIP
+          # 5. Tampilan SwiftUI dengan Password Toggle & Auto-Detect Akurat
           cat << 'EOF' > Sources/ContentView.swift
           import SwiftUI
           import UniformTypeIdentifiers
           import ZIPFoundation
+
+          // Komponen Input Password dengan Tombol Mata (Hide/Show)
+          struct PasswordFieldWithToggle: View {
+              let title: String
+              @Binding var text: String
+              @State private var isSecured: Bool = true
+              
+              var body: some View {
+                  HStack {
+                      if isSecured {
+                          SecureField(title, text: $text)
+                              .autocapitalization(.none)
+                              .disableAutocorrection(true)
+                      } else {
+                          TextField(title, text: $text)
+                              .autocapitalization(.none)
+                              .disableAutocorrection(true)
+                      }
+                      
+                      Button(action: {
+                          isSecured.toggle()
+                      }) {
+                          Image(systemName: isSecured ? "eye.slash.fill" : "eye.fill")
+                              .foregroundColor(.secondary)
+                              .padding(4)
+                      }
+                      .buttonStyle(PlainButtonStyle())
+                  }
+              }
+          }
 
           struct ContentView: View {
               @State private var zipURL: URL? = nil
@@ -178,6 +208,7 @@ jobs:
               @State private var newPassword = ""
               
               @State private var isProcessing = false
+              @State private var isDetectingPassword = false
               @State private var showFilePicker = false
               @State private var showShareSheet = false
               @State private var generatedZipURL: URL? = nil
@@ -196,7 +227,10 @@ jobs:
                                       Text(zipURL != nil ? zipFileName : "Pilih File .zip Sertifikat")
                                           .foregroundColor(zipURL != nil ? .primary : .secondary)
                                       Spacer()
-                                      if zipURL != nil {
+                                      if isDetectingPassword {
+                                          ProgressView()
+                                              .progressViewStyle(CircularProgressViewStyle())
+                                      } else if zipURL != nil {
                                           Image(systemName: "checkmark.circle.fill")
                                               .foregroundColor(.green)
                                       }
@@ -204,9 +238,9 @@ jobs:
                               }
                           }
                           
-                          Section(header: Text("2. Pengaturan Password"), footer: Text("File teks (.txt) di dalam ZIP akan otomatis diperbarui isinya dengan password baru.")) {
-                              SecureField("Old Password: ••••••••", text: $oldPassword)
-                              SecureField("New Password: ••••••••", text: $newPassword)
+                          Section(header: Text("2. Pengaturan Password"), footer: Text(oldPassword.isEmpty ? "Masukkan password lama dan baru." : "Password lama berhasil dideteksi otomatis! Klik ikon mata untuk melihat.")) {
+                              PasswordFieldWithToggle(title: "Old Password", text: $oldPassword)
+                              PasswordFieldWithToggle(title: "New Password", text: $newPassword)
                           }
                           
                           Section {
@@ -244,10 +278,14 @@ jobs:
                               }
                           }
                       }
-                      .navigationTitle("Cert Pack v2.0")
+                      .navigationTitle("Cert Pack v2.1")
                       .navigationViewStyle(StackNavigationViewStyle())
                       .sheet(isPresented: $showFilePicker) {
-                          ZipDocumentPicker(selectedURL: $zipURL, fileName: $zipFileName, detectedOldPassword: $oldPassword)
+                          ZipDocumentPicker { pickedURL in
+                              self.zipURL = pickedURL
+                              self.zipFileName = pickedURL.lastPathComponent
+                              self.autoDetectPassword(from: pickedURL)
+                          }
                       }
                       .sheet(isPresented: $showShareSheet) {
                           if let url = generatedZipURL {
@@ -258,6 +296,92 @@ jobs:
                           Alert(title: Text("Status"), message: Text(alertMessage), dismissButton: .default(Text("OK")))
                       }
                   }
+              }
+              
+              // Fungsi Deteksi Password Cerdas Langsung di Level Aplikasi
+              func autoDetectPassword(from url: URL) {
+                  isDetectingPassword = true
+                  
+                  DispatchQueue.global(qos: .userInitiated).async {
+                      let fm = FileManager.default
+                      let tempScanDir = fm.temporaryDirectory.appendingPathComponent("Scan_\(UUID().uuidString)")
+                      
+                      defer {
+                          try? fm.removeItem(at: tempScanDir)
+                          DispatchQueue.main.async {
+                              self.isDetectingPassword = false
+                          }
+                      }
+                      
+                      do {
+                          try fm.createDirectory(at: tempScanDir, withIntermediateDirectories: true)
+                          try fm.unzipItem(at: url, to: tempScanDir)
+                          
+                          if let enumerator = fm.enumerator(at: tempScanDir, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]) {
+                              for case let file as URL in enumerator {
+                                  var isDir: ObjCBool = false
+                                  if fm.fileExists(atPath: file.path, isDirectory: &isDir), !isDir.boolValue {
+                                      let ext = file.pathExtension.lowercased()
+                                      // Lewati file binari/sertifikat utama
+                                      if ext == "p12" || ext == "mobileprovision" || ext == "provisionprofile" || ext == "png" || ext == "jpg" {
+                                          continue
+                                      }
+                                      
+                                      if let data = try? Data(contentsOf: file),
+                                         let content = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) {
+                                          if let detected = self.parsePassword(from: content) {
+                                              DispatchQueue.main.async {
+                                                  self.oldPassword = detected
+                                              }
+                                              return
+                                          }
+                                      }
+                                  }
+                              }
+                          }
+                      } catch {
+                          print("Scan error: \(error.localizedDescription)")
+                      }
+                  }
+              }
+              
+              func parsePassword(from text: String) -> String? {
+                  let lines = text.components(separatedBy: .newlines)
+                      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                      .filter { !$0.isEmpty }
+                  
+                  if lines.isEmpty { return nil }
+                  
+                  let unwantedChars = CharacterSet(charactersIn: "\"\'` \t\r\n")
+                  
+                  // 1. Pola Label (Password: 123, Pass=1, sandi: apple, dsb.)
+                  let pattern = #"(?i)(?:password|pass|pwd|pin|sandi|kata\s*sandi|key|kode)\s*[:=–-]?\s*([^\r\n]+)"#
+                  if let regex = try? NSRegularExpression(pattern: pattern) {
+                      for line in lines {
+                          let range = NSRange(line.startIndex..<line.endIndex, in: line)
+                          if let match = regex.firstMatch(in: line, options: [], range: range), match.numberOfRanges > 1 {
+                              if let r = Range(match.range(at: 1), in: line) {
+                                  let res = String(line[r]).trimmingCharacters(in: unwantedChars)
+                                  if !res.isEmpty { return res }
+                              }
+                          }
+                      }
+                  }
+                  
+                  // 2. Jika isi file cuma 1 baris pendek (misal isinya cuma: 1 atau 123456)
+                  if lines.count == 1 && lines[0].count <= 40 {
+                      return lines[0].trimmingCharacters(in: unwantedChars)
+                  }
+                  
+                  // 3. Cari baris tunggal pendek yang bukan link promo web/telegram
+                  for line in lines {
+                      let lower = line.lowercased()
+                      if line.count <= 25 && !lower.contains("http") && !lower.contains("t.me") && !lower.contains("telegram") && !line.contains(" ") {
+                          return line.trimmingCharacters(in: unwantedChars)
+                      }
+                  }
+                  
+                  return nil
               }
               
               func processZipPackage() {
@@ -357,9 +481,7 @@ jobs:
           }
 
           struct ZipDocumentPicker: UIViewControllerRepresentable {
-              @Binding var selectedURL: URL?
-              @Binding var fileName: String
-              @Binding var detectedOldPassword: String
+              var onSelected: (URL) -> Void
               
               func makeCoordinator() -> Coordinator { Coordinator(self) }
               
@@ -378,59 +500,7 @@ jobs:
                   
                   func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
                       guard let url = urls.first else { return }
-                      parent.selectedURL = url
-                      parent.fileName = url.lastPathComponent
-                      
-                      DispatchQueue.global(qos: .utility).async {
-                          let fm = FileManager.default
-                          let tempTest = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-                          if (try? fm.createDirectory(at: tempTest, withIntermediateDirectories: true)) != nil {
-                              if (try? fm.unzipItem(at: url, to: tempTest)) != nil {
-                                  if let enumerator = fm.enumerator(at: tempTest, includingPropertiesForKeys: nil) {
-                                      for case let f as URL in enumerator {
-                                          if f.pathExtension.lowercased() == "txt" {
-                                              if let str = try? String(contentsOf: f, encoding: .utf8) {
-                                                  if let parsedPassword = self.smartExtractPassword(from: str) {
-                                                      DispatchQueue.main.async {
-                                                          self.parent.detectedOldPassword = parsedPassword
-                                                      }
-                                                      break
-                                                  }
-                                              }
-                                          }
-                                      }
-                                  }
-                              }
-                              try? fm.removeItem(at: tempTest)
-                          }
-                      }
-                  }
-                  
-                  func smartExtractPassword(from text: String) -> String? {
-                      let lines = text.components(separatedBy: .newlines)
-                          .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                          .filter { !$0.isEmpty }
-                      
-                      if lines.isEmpty { return nil }
-                      
-                      let pattern = #"(?i)(?:password|pass|pwd|pin|sandi)\s*[:=]?\s*([^\r\n]+)"#
-                      if let regex = try? NSRegularExpression(pattern: pattern) {
-                          for line in lines {
-                              let range = NSRange(line.startIndex..<line.endIndex, in: line)
-                              if let match = regex.firstMatch(in: line, options: [], range: range), match.numberOfRanges > 1 {
-                                  if let r = Range(match.range(at: 1), in: line) {
-                                      let extracted = String(line[r]).trimmingCharacters(in: .whitespacesAndNewlines)
-                                      if !extracted.isEmpty { return extracted }
-                                  }
-                              }
-                          }
-                      }
-                      
-                      if lines.count == 1 && lines[0].count <= 40 {
-                          return lines[0]
-                      }
-                      
-                      return nil
+                      parent.onSelected(url)
                   }
               }
           }
@@ -444,7 +514,7 @@ jobs:
           }
           EOF
 
-          # 6. Konfigurasi XcodeGen (Versi 2.0 + SPM Universal + LaunchScreen Storyboard)
+          # 6. Konfigurasi XcodeGen v2.1
           cat << 'EOF' > project.yml
           name: P12Changer
           options:
@@ -468,8 +538,8 @@ jobs:
                 - package: ZIPFoundation
               settings:
                 PRODUCT_BUNDLE_IDENTIFIER: com.ibaalpremium.p12changer
-                MARKETING_VERSION: "2.0"
-                CURRENT_PROJECT_VERSION: "2"
+                MARKETING_VERSION: "2.1"
+                CURRENT_PROJECT_VERSION: "3"
                 SWIFT_VERSION: "5.0"
                 GENERATE_INFOPLIST_FILE: "YES"
                 INFOPLIST_KEY_UILaunchStoryboardName: "LaunchScreen"
@@ -513,5 +583,5 @@ jobs:
       - name: Upload IPA Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: CertPack-v2.0-IPA
+          name: CertPack-v2.1-IPA
           path: P12Changer.ipa
