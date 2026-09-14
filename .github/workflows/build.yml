@@ -1,0 +1,51 @@
+name: Build P12 Changer IPA
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build and Package IPA
+    runs-on: macos-13
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode Project
+        run: xcodegen generate
+
+      - name: Build Application
+        run: |
+          xcodebuild clean build \
+            -project P12Changer.xcodeproj \
+            -scheme P12Changer \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath ./build_output \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Package to IPA
+        run: |
+          mkdir -p Payload
+          # Copy app yang sudah di-build ke folder Payload
+          cp -r ./build_output/Build/Products/Release-iphoneos/P12Changer.app Payload/
+          
+          # Compress menjadi file .ipa
+          zip -qr P12Changer.ipa Payload
+          
+          # Clean up
+          rm -rf Payload
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: P12Changer-IPA
+          path: P12Changer.ipa
