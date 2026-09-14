@@ -14,7 +14,6 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # Langkah baru: Memaksa mesin menggunakan Xcode 16 ke atas
       - name: Switch to Xcode 16
         run: |
           sudo xcode-select -s $(ls -d /Applications/Xcode_16*.app | head -n 1)/Contents/Developer
@@ -33,10 +32,7 @@ jobs:
             -scheme P12Changer \
             -configuration Release \
             -sdk iphoneos \
-            -derivedDataPath ./build_output \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO
+            -derivedDataPath ./build_output
 
       - name: Package to IPA
         run: |
