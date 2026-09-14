@@ -1,4 +1,4 @@
-name: Build P12 Changer IPA (Auto-Generate)
+name: Build P12 Changer IPA (Real Engine)
 
 on:
   push:
@@ -22,10 +22,104 @@ jobs:
       - name: Install Dependencies
         run: brew install xcodegen ldid
 
-      - name: Auto-Generate Project Files
+      - name: Auto-Generate Source Files with OpenSSL Engine
         run: |
           mkdir -p Sources
 
+          # 1. Header Bridge Objective-C
+          cat << 'EOF' > Sources/P12Bridge.h
+          #import <Foundation/Foundation.h>
+
+          @interface P12Bridge : NSObject
+          + (NSData * _Nullable)changePasswordForP12:(NSData * _Nonnull)p12Data
+                                         oldPassword:(NSString * _Nonnull)oldPassword
+                                         newPassword:(NSString * _Nonnull)newPassword
+                                               error:(NSString * _Nullable * _Nullable)errorMsg;
+          @end
+          EOF
+
+          # 2. Implementasi Kriptografi OpenSSL Nyata
+          cat << 'EOF' > Sources/P12Bridge.m
+          #import "P12Bridge.h"
+          #import <openssl/pkcs12.h>
+          #import <openssl/bio.h>
+          #import <openssl/err.h>
+
+          @implementation P12Bridge
+
+          + (NSData *)changePasswordForP12:(NSData *)p12Data
+                               oldPassword:(NSString *)oldPassword
+                               newPassword:(NSString *)newPassword
+                                     error:(NSString **)errorMsg {
+              OpenSSL_add_all_algorithms();
+              ERR_load_crypto_strings();
+
+              BIO *bioIn = BIO_new_mem_buf([p12Data bytes], (int)[p12Data length]);
+              if (!bioIn) {
+                  if (errorMsg) *errorMsg = @"Gagal membaca buffer memory file";
+                  return nil;
+              }
+
+              PKCS12 *p12 = d2i_PKCS12_bio(bioIn, NULL);
+              BIO_free(bioIn);
+
+              if (!p12) {
+                  if (errorMsg) *errorMsg = @"Format file bukan .p12 yang valid";
+                  return nil;
+              }
+
+              EVP_PKEY *pkey = NULL;
+              X509 *cert = NULL;
+              STACK_OF(X509) *ca = NULL;
+
+              // Parse / Buka dengan Password Lama
+              int parseRes = PKCS12_parse(p12, [oldPassword UTF8String], &pkey, &cert, &ca);
+              PKCS12_free(p12);
+
+              if (parseRes != 1) {
+                  if (errorMsg) *errorMsg = @"Password lama salah atau file korup!";
+                  return nil;
+              }
+
+              // Enkripsi Ulang dengan Password Baru (3DES & SHA1 compatible standard)
+              PKCS12 *newP12 = PKCS12_create((char *)[newPassword UTF8String],
+                                             NULL,
+                                             pkey,
+                                             cert,
+                                             ca,
+                                             0, 0, 2048, 1, 0);
+
+              if (pkey) EVP_PKEY_free(pkey);
+              if (cert) X509_free(cert);
+              if (ca) sk_X509_pop_free(ca, X509_free);
+
+              if (!newP12) {
+                  if (errorMsg) *errorMsg = @"Gagal membuat struktur P12 baru";
+                  return nil;
+              }
+
+              BIO *bioOut = BIO_new(BIO_s_mem());
+              if (!bioOut) {
+                  PKCS12_free(newP12);
+                  if (errorMsg) *errorMsg = @"Gagal mengalokasikan output buffer";
+                  return nil;
+              }
+
+              i2d_PKCS12_bio(bioOut, newP12);
+              PKCS12_free(newP12);
+
+              char *dataPtr = NULL;
+              long dataLen = BIO_get_mem_data(bioOut, &dataPtr);
+              NSData *result = [NSData dataWithBytes:dataPtr length:dataLen];
+              BIO_free(bioOut);
+
+              return result;
+          }
+
+          @end
+          EOF
+
+          # 3. Entry Point SwiftUI App
           cat << 'EOF' > Sources/P12ChangerApp.swift
           import SwiftUI
 
@@ -39,6 +133,7 @@ jobs:
           }
           EOF
 
+          # 4. Tampilan SwiftUI yang Terhubung ke Engine OpenSSL
           cat << 'EOF' > Sources/ContentView.swift
           import SwiftUI
           import UniformTypeIdentifiers
@@ -111,7 +206,6 @@ jobs:
                           }
                       }
                       .navigationTitle("P12 Changer")
-                      // Menggunakan UIDocumentPickerViewController native
                       .sheet(isPresented: $showFilePicker) {
                           DocumentPicker(selectedURL: $p12URL, fileName: $p12FileName)
                       }
@@ -130,7 +224,16 @@ jobs:
                   guard let inputURL = p12URL else { return }
                   do {
                       let p12Data = try Data(contentsOf: inputURL)
-                      let outputData = p12Data 
+                      
+                      var errorMsg: NSString? = nil
+                      guard let outputData = P12Bridge.changePassword(forP12: p12Data,
+                                                                      oldPassword: oldPassword,
+                                                                      newPassword: newPassword,
+                                                                      error: &errorMsg) else {
+                          self.alertMessage = errorMsg as String? ?? "Gagal memproses file."
+                          self.showAlert = true
+                          return
+                      }
                       
                       let tempDir = FileManager.default.temporaryDirectory
                       let targetName = p12FileName.isEmpty ? "certificate.p12" : p12FileName
@@ -138,23 +241,20 @@ jobs:
                       
                       try outputData.write(to: outputURL)
                       self.generatedP12URL = outputURL
-                      self.alertMessage = "Password successfully changed!\nReady to save."
+                      self.alertMessage = "Password berhasil diubah total!\nSiap disimpan."
                       self.showAlert = true
                   } catch {
-                      self.alertMessage = "Error processing file: \(error.localizedDescription)"
+                      self.alertMessage = "Error: \(error.localizedDescription)"
                       self.showAlert = true
                   }
               }
           }
 
-          // Document Picker native iOS (Bypass Sandbox + Mendukung .p12 tanpa greyed-out)
           struct DocumentPicker: UIViewControllerRepresentable {
               @Binding var selectedURL: URL?
               @Binding var fileName: String
               
-              func makeCoordinator() -> Coordinator {
-                  Coordinator(self)
-              }
+              func makeCoordinator() -> Coordinator { Coordinator(self) }
               
               func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
                   let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.pkcs12, .data, .item], asCopy: true)
@@ -167,11 +267,7 @@ jobs:
               
               class Coordinator: NSObject, UIDocumentPickerDelegate {
                   var parent: DocumentPicker
-                  
-                  init(_ parent: DocumentPicker) {
-                      self.parent = parent
-                  }
-                  
+                  init(_ parent: DocumentPicker) { self.parent = parent }
                   func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
                       guard let url = urls.first else { return }
                       parent.selectedURL = url
@@ -189,10 +285,15 @@ jobs:
           }
           EOF
 
+          # 5. Konfigurasi XcodeGen dengan SPM OpenSSL
           cat << 'EOF' > project.yml
           name: P12Changer
           options:
             bundleIdPrefix: com.ibaalpremium
+          packages:
+            OpenSSL:
+              url: https://github.com/krzyzanowskim/OpenSSL.git
+              from: "1.1.2200"
           targets:
             P12Changer:
               type: application
@@ -200,12 +301,15 @@ jobs:
               deploymentTarget: "15.0"
               sources:
                 - path: Sources
+              dependencies:
+                - package: OpenSSL
               settings:
                 PRODUCT_BUNDLE_IDENTIFIER: com.ibaalpremium.p12changer
                 MARKETING_VERSION: "1.0"
                 CURRENT_PROJECT_VERSION: "1"
                 SWIFT_VERSION: "5.0"
                 GENERATE_INFOPLIST_FILE: "YES"
+                SWIFT_OBJC_BRIDGING_HEADER: "Sources/P12Bridge.h"
                 CODE_SIGN_IDENTITY: ""
                 CODE_SIGNING_REQUIRED: "NO"
                 CODE_SIGNING_ALLOWED: "NO"
@@ -215,6 +319,10 @@ jobs:
         run: |
           xcodegen generate
           sed -i '' 's/objectVersion = 77;/objectVersion = 63;/g' P12Changer.xcodeproj/project.pbxproj
+
+      - name: Resolve SPM Dependencies
+        run: |
+          xcodebuild -resolvePackageDependencies -project P12Changer.xcodeproj
 
       - name: Build Application (Unsigned)
         run: |
