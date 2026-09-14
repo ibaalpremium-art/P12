@@ -8,7 +8,8 @@ on:
 jobs:
   build:
     name: Build and Package IPA
-    runs-on: macos-13
+    # Menggunakan macos-14 (Apple Silicon) agar tidak antre
+    runs-on: macos-14
 
     steps:
       - name: Checkout Repository
@@ -35,13 +36,8 @@ jobs:
       - name: Package to IPA
         run: |
           mkdir -p Payload
-          # Copy app yang sudah di-build ke folder Payload
           cp -r ./build_output/Build/Products/Release-iphoneos/P12Changer.app Payload/
-          
-          # Compress menjadi file .ipa
           zip -qr P12Changer.ipa Payload
-          
-          # Clean up
           rm -rf Payload
 
       - name: Upload IPA Artifact
