@@ -1,4 +1,4 @@
-name: Build P12 Changer IPA (Real Engine)
+name: Build Cert Zip Changer IPA (Smart TXT Engine)
 
 on:
   push:
@@ -22,7 +22,7 @@ jobs:
       - name: Install Dependencies
         run: brew install xcodegen ldid
 
-      - name: Auto-Generate Source Files with OpenSSL Engine
+      - name: Auto-Generate Source Files with Smart TXT & ZIP Engine
         run: |
           mkdir -p Sources
 
@@ -38,7 +38,7 @@ jobs:
           @end
           EOF
 
-          # 2. Implementasi Kriptografi OpenSSL Nyata
+          # 2. Implementasi Kriptografi OpenSSL
           cat << 'EOF' > Sources/P12Bridge.m
           #import "P12Bridge.h"
           #import <openssl/pkcs12.h>
@@ -72,16 +72,14 @@ jobs:
               X509 *cert = NULL;
               STACK_OF(X509) *ca = NULL;
 
-              // Parse / Buka dengan Password Lama
               int parseRes = PKCS12_parse(p12, [oldPassword UTF8String], &pkey, &cert, &ca);
               PKCS12_free(p12);
 
               if (parseRes != 1) {
-                  if (errorMsg) *errorMsg = @"Password lama salah atau file korup!";
+                  if (errorMsg) *errorMsg = @"Password lama salah atau file p12 rusak!";
                   return nil;
               }
 
-              // Enkripsi Ulang dengan Password Baru (3DES & SHA1 compatible standard)
               PKCS12 *newP12 = PKCS12_create((char *)[newPassword UTF8String],
                                              NULL,
                                              pkey,
@@ -133,20 +131,22 @@ jobs:
           }
           EOF
 
-          # 4. Tampilan SwiftUI yang Terhubung ke Engine OpenSSL
+          # 4. Tampilan SwiftUI dengan Smart TXT Detection & Parser
           cat << 'EOF' > Sources/ContentView.swift
           import SwiftUI
           import UniformTypeIdentifiers
+          import ZIPFoundation
 
           struct ContentView: View {
-              @State private var p12URL: URL? = nil
-              @State private var p12FileName: String = ""
+              @State private var zipURL: URL? = nil
+              @State private var zipFileName: String = ""
               @State private var oldPassword = ""
               @State private var newPassword = ""
               
+              @State private var isProcessing = false
               @State private var showFilePicker = false
               @State private var showShareSheet = false
-              @State private var generatedP12URL: URL? = nil
+              @State private var generatedZipURL: URL? = nil
               
               @State private var alertMessage = ""
               @State private var showAlert = false
@@ -154,15 +154,15 @@ jobs:
               var body: some View {
                   NavigationView {
                       Form {
-                          Section(header: Text("1. Select Certificate")) {
+                          Section(header: Text("1. Pilih File ZIP Sertifikat")) {
                               Button(action: { showFilePicker = true }) {
                                   HStack {
-                                      Image(systemName: "folder.fill")
-                                          .foregroundColor(.blue)
-                                      Text(p12URL != nil ? p12FileName : "Choose .p12 file")
-                                          .foregroundColor(p12URL != nil ? .primary : .secondary)
+                                      Image(systemName: "doc.zipper")
+                                          .foregroundColor(.orange)
+                                      Text(zipURL != nil ? zipFileName : "Pilih File .zip")
+                                          .foregroundColor(zipURL != nil ? .primary : .secondary)
                                       Spacer()
-                                      if p12URL != nil {
+                                      if zipURL != nil {
                                           Image(systemName: "checkmark.circle.fill")
                                               .foregroundColor(.green)
                                       }
@@ -170,32 +170,37 @@ jobs:
                               }
                           }
                           
-                          Section(header: Text("2. Credentials")) {
+                          Section(header: Text("2. Pengaturan Password"), footer: Text("File teks apa pun di dalam ZIP (.txt) akan diperbarui isinya dengan password baru ini.")) {
                               SecureField("Old Password: ••••••••", text: $oldPassword)
                               SecureField("New Password: ••••••••", text: $newPassword)
                           }
                           
                           Section {
-                              Button(action: changePassword) {
+                              Button(action: processZipPackage) {
                                   HStack {
                                       Spacer()
-                                      Text("CHANGE PASSWORD")
+                                      if isProcessing {
+                                          ProgressView()
+                                              .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                              .padding(.trailing, 5)
+                                      }
+                                      Text(isProcessing ? "PROCESSING..." : "CHANGE PASSWORD & REPACK")
                                           .bold()
                                           .foregroundColor(.white)
                                       Spacer()
                                   }
                               }
-                              .listRowBackground(p12URL == nil || oldPassword.isEmpty || newPassword.isEmpty ? Color.gray : Color.blue)
-                              .disabled(p12URL == nil || oldPassword.isEmpty || newPassword.isEmpty)
+                              .listRowBackground(zipURL == nil || oldPassword.isEmpty || newPassword.isEmpty || isProcessing ? Color.gray : Color.blue)
+                              .disabled(zipURL == nil || oldPassword.isEmpty || newPassword.isEmpty || isProcessing)
                           }
                           
-                          if generatedP12URL != nil {
-                              Section {
+                          if generatedZipURL != nil {
+                              Section(header: Text("Hasil Akhir")) {
                                   Button(action: { showShareSheet = true }) {
                                       HStack {
                                           Spacer()
-                                          Image(systemName: "checkmark.circle.fill")
-                                          Text("✅ Done — Save/Share P12")
+                                          Image(systemName: "square.and.arrow.up.fill")
+                                          Text("Simpan / Bagikan .ZIP Baru")
                                               .bold()
                                           Spacer()
                                       }
@@ -205,12 +210,13 @@ jobs:
                               }
                           }
                       }
-                      .navigationTitle("P12 Changer")
+                      .navigationTitle("Cert Pack Changer")
+                      .navigationViewStyle(StackNavigationViewStyle())
                       .sheet(isPresented: $showFilePicker) {
-                          DocumentPicker(selectedURL: $p12URL, fileName: $p12FileName)
+                          ZipDocumentPicker(selectedURL: $zipURL, fileName: $zipFileName, detectedOldPassword: $oldPassword)
                       }
                       .sheet(isPresented: $showShareSheet) {
-                          if let url = generatedP12URL {
+                          if let url = generatedZipURL {
                               ShareSheet(activityItems: [url])
                           }
                       }
@@ -220,44 +226,114 @@ jobs:
                   }
               }
               
-              func changePassword() {
-                  guard let inputURL = p12URL else { return }
-                  do {
-                      let p12Data = try Data(contentsOf: inputURL)
+              func processZipPackage() {
+                  guard let inputZipURL = zipURL else { return }
+                  isProcessing = true
+                  
+                  DispatchQueue.global(qos: .userInitiated).async {
+                      let fileManager = FileManager.default
+                      let tempRoot = fileManager.temporaryDirectory
+                      let sessionID = UUID().uuidString
+                      let extractDir = tempRoot.appendingPathComponent("Extract_\(sessionID)")
+                      let outputDir = tempRoot.appendingPathComponent("CertPack_\(sessionID)")
                       
-                      var errorMsg: NSString? = nil
-                      guard let outputData = P12Bridge.changePassword(forP12: p12Data,
-                                                                      oldPassword: oldPassword,
-                                                                      newPassword: newPassword,
-                                                                      error: &errorMsg) else {
-                          self.alertMessage = errorMsg as String? ?? "Gagal memproses file."
-                          self.showAlert = true
-                          return
+                      do {
+                          try fileManager.createDirectory(at: extractDir, withIntermediateDirectories: true)
+                          try fileManager.createDirectory(at: outputDir, withIntermediateDirectories: true)
+                          
+                          try fileManager.unzipItem(at: inputZipURL, to: extractDir)
+                          
+                          var p12URL: URL? = nil
+                          var provURL: URL? = nil
+                          var detectedTxtURL: URL? = nil
+                          
+                          if let enumerator = fileManager.enumerator(at: extractDir, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]) {
+                              for case let file as URL in enumerator {
+                                  let ext = file.pathExtension.lowercased()
+                                  if ext == "p12" {
+                                      p12URL = file
+                                  } else if ext == "mobileprovision" {
+                                      provURL = file
+                                  } else if ext == "txt" && detectedTxtURL == nil {
+                                      detectedTxtURL = file
+                                  }
+                              }
+                          }
+                          
+                          guard let foundP12URL = p12URL else {
+                              throw NSError(domain: "ZipProcess", code: 1, userInfo: [NSLocalizedDescriptionKey: "File .p12 tidak ditemukan di dalam arsip ZIP!"])
+                          }
+                          
+                          guard let foundProvURL = provURL else {
+                              throw NSError(domain: "ZipProcess", code: 2, userInfo: [NSLocalizedDescriptionKey: "File .mobileprovision tidak ditemukan di dalam ZIP!"])
+                          }
+                          
+                          let p12Data = try Data(contentsOf: foundP12URL)
+                          var errorMsg: NSString? = nil
+                          guard let newP12Data = P12Bridge.changePassword(forP12: p12Data,
+                                                                          oldPassword: self.oldPassword,
+                                                                          newPassword: self.newPassword,
+                                                                          error: &errorMsg) else {
+                              let msg = errorMsg as String? ?? "Gagal memproses kriptografi sertifikat."
+                              throw NSError(domain: "OpenSSL", code: 3, userInfo: [NSLocalizedDescriptionKey: msg])
+                          }
+                          
+                          // File 1: p12 baru
+                          let destP12URL = outputDir.appendingPathComponent(foundP12URL.lastPathComponent)
+                          try newP12Data.write(to: destP12URL)
+                          
+                          // File 2: mobileprovision asli
+                          let destProvURL = outputDir.appendingPathComponent(foundProvURL.lastPathComponent)
+                          try fileManager.copyItem(at: foundProvURL, to: destProvURL)
+                          
+                          // File 3: Pertahankan nama file .txt asli jika ada, jika tidak ada buat password.txt
+                          let txtFileName = detectedTxtURL?.lastPathComponent ?? "password.txt"
+                          let destPassURL = outputDir.appendingPathComponent(txtFileName)
+                          let passContent = "\(self.newPassword)\n"
+                          try passContent.data(using: .utf8)?.write(to: destPassURL)
+                          
+                          let cleanZipName = self.zipFileName.replacingOccurrences(of: ".zip", with: "", options: .caseInsensitive)
+                          let resultZipURL = tempRoot.appendingPathComponent("New_\(cleanZipName).zip")
+                          
+                          if fileManager.fileExists(atPath: resultZipURL.path) {
+                              try fileManager.removeItem(at: resultZipURL)
+                          }
+                          
+                          try fileManager.zipItem(at: outputDir, to: resultZipURL, shouldKeepParent: false)
+                          
+                          try? fileManager.removeItem(at: extractDir)
+                          try? fileManager.removeItem(at: outputDir)
+                          
+                          DispatchQueue.main.async {
+                              self.generatedZipURL = resultZipURL
+                              self.isProcessing = false
+                              self.alertMessage = "ZIP berhasil dibuat ulang dengan 3 file:\n• \(foundP12URL.lastPathComponent)\n• \(foundProvURL.lastPathComponent)\n• \(txtFileName)"
+                              self.showAlert = true
+                          }
+                          
+                      } catch {
+                          try? fileManager.removeItem(at: extractDir)
+                          try? fileManager.removeItem(at: outputDir)
+                          
+                          DispatchQueue.main.async {
+                              self.isProcessing = false
+                              self.alertMessage = error.localizedDescription
+                              self.showAlert = true
+                          }
                       }
-                      
-                      let tempDir = FileManager.default.temporaryDirectory
-                      let targetName = p12FileName.isEmpty ? "certificate.p12" : p12FileName
-                      let outputURL = tempDir.appendingPathComponent("New_\(targetName)")
-                      
-                      try outputData.write(to: outputURL)
-                      self.generatedP12URL = outputURL
-                      self.alertMessage = "Password berhasil diubah total!\nSiap disimpan."
-                      self.showAlert = true
-                  } catch {
-                      self.alertMessage = "Error: \(error.localizedDescription)"
-                      self.showAlert = true
                   }
               }
           }
 
-          struct DocumentPicker: UIViewControllerRepresentable {
+          struct ZipDocumentPicker: UIViewControllerRepresentable {
               @Binding var selectedURL: URL?
               @Binding var fileName: String
+              @Binding var detectedOldPassword: String
               
               func makeCoordinator() -> Coordinator { Coordinator(self) }
               
               func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-                  let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.pkcs12, .data, .item], asCopy: true)
+                  let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.zip, .data, .item], asCopy: true)
                   picker.delegate = context.coordinator
                   picker.allowsMultipleSelection = false
                   return picker
@@ -266,12 +342,67 @@ jobs:
               func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
               
               class Coordinator: NSObject, UIDocumentPickerDelegate {
-                  var parent: DocumentPicker
-                  init(_ parent: DocumentPicker) { self.parent = parent }
+                  var parent: ZipDocumentPicker
+                  init(_ parent: ZipDocumentPicker) { self.parent = parent }
+                  
                   func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
                       guard let url = urls.first else { return }
                       parent.selectedURL = url
                       parent.fileName = url.lastPathComponent
+                      
+                      // Ekstraksi pintar password lama dari file .txt apa pun namanya
+                      DispatchQueue.global(qos: .utility).async {
+                          let fm = FileManager.default
+                          let tempTest = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                          if (try? fm.createDirectory(at: tempTest, withIntermediateDirectories: true)) != nil {
+                              if (try? fm.unzipItem(at: url, to: tempTest)) != nil {
+                                  if let enumerator = fm.enumerator(at: tempTest, includingPropertiesForKeys: nil) {
+                                      for case let f as URL in enumerator {
+                                          if f.pathExtension.lowercased() == "txt" {
+                                              if let str = try? String(contentsOf: f, encoding: .utf8) {
+                                                  if let parsedPassword = self.smartExtractPassword(from: str) {
+                                                      DispatchQueue.main.async {
+                                                          self.parent.detectedOldPassword = parsedPassword
+                                                      }
+                                                      break
+                                                  }
+                                              }
+                                          }
+                                      }
+                                  }
+                              }
+                              try? fm.removeItem(at: tempTest)
+                          }
+                      }
+                  }
+                  
+                  func smartExtractPassword(from text: String) -> String? {
+                      let lines = text.components(separatedBy: .newlines)
+                          .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                          .filter { !$0.isEmpty }
+                      
+                      if lines.isEmpty { return nil }
+                      
+                      // Cari pola: "Password: 123", "Pass: 1", "Pwd: ...", "Pin: ..."
+                      let pattern = #"(?i)(?:password|pass|pwd|pin|sandi)\s*[:=]?\s*([^\r\n]+)"#
+                      if let regex = try? NSRegularExpression(pattern: pattern) {
+                          for line in lines {
+                              let range = NSRange(line.startIndex..<line.endIndex, in: line)
+                              if let match = regex.firstMatch(in: line, options: [], range: range), match.numberOfRanges > 1 {
+                                  if let r = Range(match.range(at: 1), in: line) {
+                                      let extracted = String(line[r]).trimmingCharacters(in: .whitespacesAndNewlines)
+                                      if !extracted.isEmpty { return extracted }
+                                  }
+                              }
+                          }
+                      }
+                      
+                      // Jika file cuma 1 baris pendek (misal isinya cuma: 1 atau 123456), jadikan password
+                      if lines.count == 1 && lines[0].count <= 40 {
+                          return lines[0]
+                      }
+                      
+                      return nil
                   }
               }
           }
@@ -285,7 +416,7 @@ jobs:
           }
           EOF
 
-          # 5. Konfigurasi XcodeGen dengan SPM OpenSSL
+          # 5. Konfigurasi XcodeGen dengan SPM OpenSSL dan ZIPFoundation
           cat << 'EOF' > project.yml
           name: P12Changer
           options:
@@ -294,6 +425,9 @@ jobs:
             OpenSSL:
               url: https://github.com/krzyzanowskim/OpenSSL.git
               from: "1.1.2200"
+            ZIPFoundation:
+              url: https://github.com/weichsel/ZIPFoundation.git
+              from: "0.9.19"
           targets:
             P12Changer:
               type: application
@@ -303,12 +437,15 @@ jobs:
                 - path: Sources
               dependencies:
                 - package: OpenSSL
+                - package: ZIPFoundation
               settings:
                 PRODUCT_BUNDLE_IDENTIFIER: com.ibaalpremium.p12changer
                 MARKETING_VERSION: "1.0"
                 CURRENT_PROJECT_VERSION: "1"
                 SWIFT_VERSION: "5.0"
                 GENERATE_INFOPLIST_FILE: "YES"
+                INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
+                INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait"
                 SWIFT_OBJC_BRIDGING_HEADER: "Sources/P12Bridge.h"
                 CODE_SIGN_IDENTITY: ""
                 CODE_SIGNING_REQUIRED: "NO"
@@ -336,10 +473,11 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY=""
 
-      - name: Fakesign & Package to IPA
+      - name: Fakesign, Inject Native Resolution & Package to IPA
         run: |
           mkdir -p Payload
           cp -r ./build_output/Build/Products/Release-iphoneos/P12Changer.app Payload/
+          /usr/libexec/PlistBuddy -c "Add :UILaunchScreen dict" Payload/P12Changer.app/Info.plist 2>/dev/null || true
           chmod +x Payload/P12Changer.app/P12Changer
           ldid -S Payload/P12Changer.app/P12Changer
           zip -qr P12Changer.ipa Payload
