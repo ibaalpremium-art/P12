@@ -19,8 +19,9 @@ jobs:
           sudo xcode-select -s $(ls -d /Applications/Xcode_16*.app | head -n 1)/Contents/Developer
           xcodebuild -version
 
-      - name: Install XcodeGen
-        run: brew install xcodegen
+      # Tambahkan ldid untuk Fakesign TrollStore
+      - name: Install Dependencies
+        run: brew install xcodegen ldid
 
       - name: Generate Xcode Project
         run: xcodegen generate
@@ -32,12 +33,20 @@ jobs:
             -scheme P12Changer \
             -configuration Release \
             -sdk iphoneos \
-            -derivedDataPath ./build_output
+            -derivedDataPath ./build_output \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED="NO" \
+            CODE_SIGNING_ALLOWED="NO" \
+            ENTITLEMENTS_REQUIRED="NO"
 
-      - name: Package to IPA
+      - name: Fakesign and Package to IPA
         run: |
           mkdir -p Payload
           cp -r ./build_output/Build/Products/Release-iphoneos/P12Changer.app Payload/
+          
+          # Fakesign menggunakan ldid (Wajib agar TrollStore bisa membaca binary Xcode 16)
+          ldid -S Payload/P12Changer.app/P12Changer
+          
           zip -qr P12Changer.ipa Payload
           rm -rf Payload
 
