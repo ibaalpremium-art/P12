@@ -45,6 +45,7 @@ jobs:
 
           struct ContentView: View {
               @State private var p12URL: URL? = nil
+              @State private var p12FileName: String = ""
               @State private var oldPassword = ""
               @State private var newPassword = ""
               
@@ -62,32 +63,45 @@ jobs:
                               Button(action: { showFilePicker = true }) {
                                   HStack {
                                       Image(systemName: "folder.fill")
-                                      Text(p12URL != nil ? p12URL!.lastPathComponent : "Choose .p12 file")
+                                          .foregroundColor(.blue)
+                                      Text(p12URL != nil ? p12FileName : "Choose .p12 file")
+                                          .foregroundColor(p12URL != nil ? .primary : .secondary)
+                                      Spacer()
+                                      if p12URL != nil {
+                                          Image(systemName: "checkmark.circle.fill")
+                                              .foregroundColor(.green)
+                                      }
                                   }
                               }
                           }
+                          
                           Section(header: Text("2. Credentials")) {
                               SecureField("Old Password: ••••••••", text: $oldPassword)
                               SecureField("New Password: ••••••••", text: $newPassword)
                           }
+                          
                           Section {
                               Button(action: changePassword) {
                                   HStack {
                                       Spacer()
-                                      Text("CHANGE PASSWORD").bold().foregroundColor(.white)
+                                      Text("CHANGE PASSWORD")
+                                          .bold()
+                                          .foregroundColor(.white)
                                       Spacer()
                                   }
                               }
                               .listRowBackground(p12URL == nil || oldPassword.isEmpty || newPassword.isEmpty ? Color.gray : Color.blue)
                               .disabled(p12URL == nil || oldPassword.isEmpty || newPassword.isEmpty)
                           }
+                          
                           if generatedP12URL != nil {
                               Section {
                                   Button(action: { showShareSheet = true }) {
                                       HStack {
                                           Spacer()
                                           Image(systemName: "checkmark.circle.fill")
-                                          Text("✅ Done — Save/Share P12").bold()
+                                          Text("✅ Done — Save/Share P12")
+                                              .bold()
                                           Spacer()
                                       }
                                   }
@@ -97,16 +111,14 @@ jobs:
                           }
                       }
                       .navigationTitle("P12 Changer")
-                      .fileImporter(isPresented: $showFilePicker, allowedContentTypes: [UTType(filenameExtension: "p12") ?? .data]) { result in
-                          switch result {
-                          case .success(let url):
-                              if url.startAccessingSecurityScopedResource() { self.p12URL = url }
-                          case .failure(let error):
-                              print("Error: \(error.localizedDescription)")
-                          }
+                      // Menggunakan UIDocumentPickerViewController native
+                      .sheet(isPresented: $showFilePicker) {
+                          DocumentPicker(selectedURL: $p12URL, fileName: $p12FileName)
                       }
                       .sheet(isPresented: $showShareSheet) {
-                          if let url = generatedP12URL { ShareSheet(activityItems: [url]) }
+                          if let url = generatedP12URL {
+                              ShareSheet(activityItems: [url])
+                          }
                       }
                       .alert(isPresented: $showAlert) {
                           Alert(title: Text("Status"), message: Text(alertMessage), dismissButton: .default(Text("OK")))
@@ -119,9 +131,11 @@ jobs:
                   do {
                       let p12Data = try Data(contentsOf: inputURL)
                       let outputData = p12Data 
+                      
                       let tempDir = FileManager.default.temporaryDirectory
-                      let newFileName = "New_\(inputURL.lastPathComponent)"
-                      let outputURL = tempDir.appendingPathComponent(newFileName)
+                      let targetName = p12FileName.isEmpty ? "certificate.p12" : p12FileName
+                      let outputURL = tempDir.appendingPathComponent("New_\(targetName)")
+                      
                       try outputData.write(to: outputURL)
                       self.generatedP12URL = outputURL
                       self.alertMessage = "Password successfully changed!\nReady to save."
@@ -129,6 +143,39 @@ jobs:
                   } catch {
                       self.alertMessage = "Error processing file: \(error.localizedDescription)"
                       self.showAlert = true
+                  }
+              }
+          }
+
+          // Document Picker native iOS (Bypass Sandbox + Mendukung .p12 tanpa greyed-out)
+          struct DocumentPicker: UIViewControllerRepresentable {
+              @Binding var selectedURL: URL?
+              @Binding var fileName: String
+              
+              func makeCoordinator() -> Coordinator {
+                  Coordinator(self)
+              }
+              
+              func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+                  let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.pkcs12, .data, .item], asCopy: true)
+                  picker.delegate = context.coordinator
+                  picker.allowsMultipleSelection = false
+                  return picker
+              }
+              
+              func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+              
+              class Coordinator: NSObject, UIDocumentPickerDelegate {
+                  var parent: DocumentPicker
+                  
+                  init(_ parent: DocumentPicker) {
+                      self.parent = parent
+                  }
+                  
+                  func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+                      guard let url = urls.first else { return }
+                      parent.selectedURL = url
+                      parent.fileName = url.lastPathComponent
                   }
               }
           }
@@ -185,11 +232,8 @@ jobs:
         run: |
           mkdir -p Payload
           cp -r ./build_output/Build/Products/Release-iphoneos/P12Changer.app Payload/
-          
-          # Berikan izin eksekusi dan fakesign binary aplikasi
           chmod +x Payload/P12Changer.app/P12Changer
           ldid -S Payload/P12Changer.app/P12Changer
-          
           zip -qr P12Changer.ipa Payload
           rm -rf Payload
 
