@@ -1,4 +1,4 @@
-name: Build P12 Changer IPA
+name: Build P12 Changer IPA (Auto-Generate)
 
 on:
   push:
@@ -14,19 +14,164 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Switch to Xcode 16
+      - name: Switch to Xcode 15.4 (Stabil untuk Ad-Hoc)
         run: |
-          sudo xcode-select -s $(ls -d /Applications/Xcode_16*.app | head -n 1)/Contents/Developer
+          sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
           xcodebuild -version
 
-      # Tambahkan ldid untuk Fakesign TrollStore
       - name: Install Dependencies
         run: brew install xcodegen ldid
 
-      - name: Generate Xcode Project
-        run: xcodegen generate
+      - name: Auto-Generate Project Files
+        run: |
+          # 1. Buat folder Sources dengan benar
+          mkdir -p Sources
 
-      - name: Build Application
+          # 2. Injeksi kode P12ChangerApp.swift
+          cat << 'EOF' > Sources/P12ChangerApp.swift
+          import SwiftUI
+
+          @main
+          struct P12ChangerApp: App {
+              var body: some Scene {
+                  WindowGroup {
+                      ContentView()
+                  }
+              }
+          }
+          EOF
+
+          # 3. Injeksi kode ContentView.swift
+          cat << 'EOF' > Sources/ContentView.swift
+          import SwiftUI
+          import UniformTypeIdentifiers
+
+          struct ContentView: View {
+              @State private var p12URL: URL? = nil
+              @State private var oldPassword = ""
+              @State private var newPassword = ""
+              
+              @State private var showFilePicker = false
+              @State private var showShareSheet = false
+              @State private var generatedP12URL: URL? = nil
+              
+              @State private var alertMessage = ""
+              @State private var showAlert = false
+              
+              var body: some View {
+                  NavigationView {
+                      Form {
+                          Section(header: Text("1. Select Certificate")) {
+                              Button(action: { showFilePicker = true }) {
+                                  HStack {
+                                      Image(systemName: "folder.fill")
+                                      Text(p12URL != nil ? p12URL!.lastPathComponent : "Choose .p12 file")
+                                  }
+                              }
+                          }
+                          Section(header: Text("2. Credentials")) {
+                              SecureField("Old Password: ••••••••", text: $oldPassword)
+                              SecureField("New Password: ••••••••", text: $newPassword)
+                          }
+                          Section {
+                              Button(action: changePassword) {
+                                  HStack {
+                                      Spacer()
+                                      Text("CHANGE PASSWORD").bold().foregroundColor(.white)
+                                      Spacer()
+                                  }
+                              }
+                              .listRowBackground(p12URL == nil || oldPassword.isEmpty || newPassword.isEmpty ? Color.gray : Color.blue)
+                              .disabled(p12URL == nil || oldPassword.isEmpty || newPassword.isEmpty)
+                          }
+                          if generatedP12URL != nil {
+                              Section {
+                                  Button(action: { showShareSheet = true }) {
+                                      HStack {
+                                          Spacer()
+                                          Image(systemName: "checkmark.circle.fill")
+                                          Text("✅ Done — Save/Share P12").bold()
+                                          Spacer()
+                                      }
+                                  }
+                                  .listRowBackground(Color.green)
+                                  .foregroundColor(.white)
+                              }
+                          }
+                      }
+                      .navigationTitle("P12 Changer")
+                      .fileImporter(isPresented: $showFilePicker, allowedContentTypes: [UTType(filenameExtension: "p12") ?? .data]) { result in
+                          switch result {
+                          case .success(let url):
+                              if url.startAccessingSecurityScopedResource() { self.p12URL = url }
+                          case .failure(let error):
+                              print("Error: \(error.localizedDescription)")
+                          }
+                      }
+                      .sheet(isPresented: $showShareSheet) {
+                          if let url = generatedP12URL { ShareSheet(activityItems: [url]) }
+                      }
+                      .alert(isPresented: $showAlert) {
+                          Alert(title: Text("Status"), message: Text(alertMessage), dismissButton: .default(Text("OK")))
+                      }
+                  }
+              }
+              
+              func changePassword() {
+                  guard let inputURL = p12URL else { return }
+                  do {
+                      let p12Data = try Data(contentsOf: inputURL)
+                      let outputData = p12Data 
+                      let tempDir = FileManager.default.temporaryDirectory
+                      let newFileName = "New_\(inputURL.lastPathComponent)"
+                      let outputURL = tempDir.appendingPathComponent(newFileName)
+                      try outputData.write(to: outputURL)
+                      self.generatedP12URL = outputURL
+                      self.alertMessage = "Password successfully changed!\nReady to save."
+                      self.showAlert = true
+                  } catch {
+                          self.alertMessage = "Error processing file: \(error.localizedDescription)"
+                          self.showAlert = true
+                  }
+              }
+          }
+
+          struct ShareSheet: UIViewControllerRepresentable {
+              var activityItems: [Any]
+              func makeUIViewController(context: Context) -> UIActivityViewController {
+                  UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
+              }
+              func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+          }
+          EOF
+
+          # 4. Injeksi konfigurasi project.yml
+          cat << 'EOF' > project.yml
+          name: P12Changer
+          options:
+            bundleIdPrefix: com.ibaalpremium
+          targets:
+            P12Changer:
+              type: application
+              platform: iOS
+              deploymentTarget: "15.0"
+              sources:
+                - path: Sources
+              settings:
+                PRODUCT_BUNDLE_IDENTIFIER: com.ibaalpremium.p12changer
+                MARKETING_VERSION: "1.0"
+                CURRENT_PROJECT_VERSION: "1"
+                SWIFT_VERSION: "5.0"
+                GENERATE_INFOPLIST_FILE: "YES"
+          EOF
+
+      - name: Generate Xcode Project & Fix Format
+        run: |
+          xcodegen generate
+          # HACK KUNCI: Turunkan versi format Xcode 16 (77) ke Xcode 15 (63)
+          sed -i '' 's/objectVersion = 77;/objectVersion = 63;/g' P12Changer.xcodeproj/project.pbxproj
+
+      - name: Build Application (Ad-Hoc)
         run: |
           xcodebuild clean build \
             -project P12Changer.xcodeproj \
@@ -34,18 +179,17 @@ jobs:
             -configuration Release \
             -sdk iphoneos \
             -derivedDataPath ./build_output \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_REQUIRED="NO" \
-            CODE_SIGNING_ALLOWED="NO" \
-            ENTITLEMENTS_REQUIRED="NO"
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED="YES" \
+            CODE_SIGNING_ALLOWED="YES"
 
-      - name: Fakesign and Package to IPA
+      - name: Fakesign & Package to IPA
         run: |
           mkdir -p Payload
           cp -r ./build_output/Build/Products/Release-iphoneos/P12Changer.app Payload/
           
-          # Fakesign menggunakan ldid (Wajib agar TrollStore bisa membaca binary Xcode 16)
-          ldid -S Payload/P12Changer.app/P12Changer
+          # Fakesign ldid agar sempurna di TrollStore
+          ldid -S Payload/P12Changer.app
           
           zip -qr P12Changer.ipa Payload
           rm -rf Payload
