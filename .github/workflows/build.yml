@@ -1,4 +1,4 @@
-name: Build Cert Zip Changer IPA (Smart TXT Engine)
+name: Build Cert Pack Changer v2.0
 
 on:
   push:
@@ -22,11 +22,45 @@ jobs:
       - name: Install Dependencies
         run: brew install xcodegen ldid
 
-      - name: Auto-Generate Source Files with Smart TXT & ZIP Engine
+      - name: Auto-Generate Source Files & Native LaunchScreen
         run: |
           mkdir -p Sources
 
-          # 1. Header Bridge Objective-C
+          # 1. LaunchScreen Storyboard (Wajib untuk menghentikan layar nge-zoom di iOS)
+          cat << 'EOF' > Sources/LaunchScreen.storyboard
+          <?xml version="1.0" encoding="UTF-8"?>
+          <document type="com.apple.InterfaceBuilder3.CocoaTouch.Storyboard.XIB" version="3.0" toolsVersion="22505" targetRuntime="iOS.CocoaTouch" propertyAccessControl="none" useAutolayout="YES" launchScreen="YES" useTraitCollections="YES" useSafeAreas="YES" colorMatched="YES" initialViewController="01J-lp-oVM">
+              <device id="retina6_12" orientation="portrait" appearance="light"/>
+              <dependencies>
+                  <plugIn identifier="com.apple.InterfaceBuilder.IBCocoaTouchPlugin" version="22504"/>
+                  <capability name="Safe area layout guides" minToolsVersion="9.0"/>
+                  <capability name="documents saved in the Xcode 8 format" minToolsVersion="8.0"/>
+              </dependencies>
+              <scenes>
+                  <scene sceneID="EHf-IW-A2E">
+                      <objects>
+                          <viewController id="01J-lp-oVM" sceneMemberID="viewController">
+                              <view key="view" contentMode="scaleToFill" id="Ze5-6b-2t3">
+                                  <rect key="frame" x="0.0" y="0.0" width="393" height="852"/>
+                                  <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                                  <viewLayoutGuide key="safeArea" id="6Tk-OE-BBY"/>
+                                  <color key="backgroundColor" systemColor="systemBackgroundColor"/>
+                              </view>
+                          </viewController>
+                          <placeholder placeholderIdentifier="IBFirstResponder" id="iYj-Kq-Ea1" userLabel="First Responder" sceneMemberID="firstResponder"/>
+                      </objects>
+                      <point key="canvasLocation" x="53" y="375"/>
+                  </scene>
+              </scenes>
+              <resources>
+                  <systemColor name="systemBackgroundColor">
+                      <color white="1" alpha="1" colorSpace="custom" customColorSpace="genericGamma22GrayColorSpace"/>
+                  </systemColor>
+              </resources>
+          </document>
+          EOF
+
+          # 2. Header Bridge Objective-C
           cat << 'EOF' > Sources/P12Bridge.h
           #import <Foundation/Foundation.h>
 
@@ -38,7 +72,7 @@ jobs:
           @end
           EOF
 
-          # 2. Implementasi Kriptografi OpenSSL
+          # 3. Implementasi Kriptografi OpenSSL
           cat << 'EOF' > Sources/P12Bridge.m
           #import "P12Bridge.h"
           #import <openssl/pkcs12.h>
@@ -56,7 +90,7 @@ jobs:
 
               BIO *bioIn = BIO_new_mem_buf([p12Data bytes], (int)[p12Data length]);
               if (!bioIn) {
-                  if (errorMsg) *errorMsg = @"Gagal membaca buffer memory file";
+                  if (errorMsg) *errorMsg = @"Gagal membaca buffer memori file";
                   return nil;
               }
 
@@ -117,7 +151,7 @@ jobs:
           @end
           EOF
 
-          # 3. Entry Point SwiftUI App
+          # 4. Entry Point SwiftUI App
           cat << 'EOF' > Sources/P12ChangerApp.swift
           import SwiftUI
 
@@ -131,7 +165,7 @@ jobs:
           }
           EOF
 
-          # 4. Tampilan SwiftUI dengan Smart TXT Detection & Parser
+          # 5. Tampilan SwiftUI Khusus Paket ZIP
           cat << 'EOF' > Sources/ContentView.swift
           import SwiftUI
           import UniformTypeIdentifiers
@@ -159,7 +193,7 @@ jobs:
                                   HStack {
                                       Image(systemName: "doc.zipper")
                                           .foregroundColor(.orange)
-                                      Text(zipURL != nil ? zipFileName : "Pilih File .zip")
+                                      Text(zipURL != nil ? zipFileName : "Pilih File .zip Sertifikat")
                                           .foregroundColor(zipURL != nil ? .primary : .secondary)
                                       Spacer()
                                       if zipURL != nil {
@@ -170,7 +204,7 @@ jobs:
                               }
                           }
                           
-                          Section(header: Text("2. Pengaturan Password"), footer: Text("File teks apa pun di dalam ZIP (.txt) akan diperbarui isinya dengan password baru ini.")) {
+                          Section(header: Text("2. Pengaturan Password"), footer: Text("File teks (.txt) di dalam ZIP akan otomatis diperbarui isinya dengan password baru.")) {
                               SecureField("Old Password: ••••••••", text: $oldPassword)
                               SecureField("New Password: ••••••••", text: $newPassword)
                           }
@@ -184,7 +218,7 @@ jobs:
                                               .progressViewStyle(CircularProgressViewStyle(tint: .white))
                                               .padding(.trailing, 5)
                                       }
-                                      Text(isProcessing ? "PROCESSING..." : "CHANGE PASSWORD & REPACK")
+                                      Text(isProcessing ? "MEMPROSES..." : "GANTI PASSWORD & REPACK")
                                           .bold()
                                           .foregroundColor(.white)
                                       Spacer()
@@ -210,7 +244,7 @@ jobs:
                               }
                           }
                       }
-                      .navigationTitle("Cert Pack Changer")
+                      .navigationTitle("Cert Pack v2.0")
                       .navigationViewStyle(StackNavigationViewStyle())
                       .sheet(isPresented: $showFilePicker) {
                           ZipDocumentPicker(selectedURL: $zipURL, fileName: $zipFileName, detectedOldPassword: $oldPassword)
@@ -278,15 +312,12 @@ jobs:
                               throw NSError(domain: "OpenSSL", code: 3, userInfo: [NSLocalizedDescriptionKey: msg])
                           }
                           
-                          // File 1: p12 baru
                           let destP12URL = outputDir.appendingPathComponent(foundP12URL.lastPathComponent)
                           try newP12Data.write(to: destP12URL)
                           
-                          // File 2: mobileprovision asli
                           let destProvURL = outputDir.appendingPathComponent(foundProvURL.lastPathComponent)
                           try fileManager.copyItem(at: foundProvURL, to: destProvURL)
                           
-                          // File 3: Pertahankan nama file .txt asli jika ada, jika tidak ada buat password.txt
                           let txtFileName = detectedTxtURL?.lastPathComponent ?? "password.txt"
                           let destPassURL = outputDir.appendingPathComponent(txtFileName)
                           let passContent = "\(self.newPassword)\n"
@@ -350,7 +381,6 @@ jobs:
                       parent.selectedURL = url
                       parent.fileName = url.lastPathComponent
                       
-                      // Ekstraksi pintar password lama dari file .txt apa pun namanya
                       DispatchQueue.global(qos: .utility).async {
                           let fm = FileManager.default
                           let tempTest = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -383,7 +413,6 @@ jobs:
                       
                       if lines.isEmpty { return nil }
                       
-                      // Cari pola: "Password: 123", "Pass: 1", "Pwd: ...", "Pin: ..."
                       let pattern = #"(?i)(?:password|pass|pwd|pin|sandi)\s*[:=]?\s*([^\r\n]+)"#
                       if let regex = try? NSRegularExpression(pattern: pattern) {
                           for line in lines {
@@ -397,7 +426,6 @@ jobs:
                           }
                       }
                       
-                      // Jika file cuma 1 baris pendek (misal isinya cuma: 1 atau 123456), jadikan password
                       if lines.count == 1 && lines[0].count <= 40 {
                           return lines[0]
                       }
@@ -416,7 +444,7 @@ jobs:
           }
           EOF
 
-          # 5. Konfigurasi XcodeGen dengan SPM OpenSSL dan ZIPFoundation
+          # 6. Konfigurasi XcodeGen (Versi 2.0 + SPM Universal + LaunchScreen Storyboard)
           cat << 'EOF' > project.yml
           name: P12Changer
           options:
@@ -427,7 +455,7 @@ jobs:
               from: "1.1.2200"
             ZIPFoundation:
               url: https://github.com/weichsel/ZIPFoundation.git
-              from: "0.9.19"
+              from: "0.9.0"
           targets:
             P12Changer:
               type: application
@@ -440,11 +468,11 @@ jobs:
                 - package: ZIPFoundation
               settings:
                 PRODUCT_BUNDLE_IDENTIFIER: com.ibaalpremium.p12changer
-                MARKETING_VERSION: "1.0"
-                CURRENT_PROJECT_VERSION: "1"
+                MARKETING_VERSION: "2.0"
+                CURRENT_PROJECT_VERSION: "2"
                 SWIFT_VERSION: "5.0"
                 GENERATE_INFOPLIST_FILE: "YES"
-                INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
+                INFOPLIST_KEY_UILaunchStoryboardName: "LaunchScreen"
                 INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait"
                 SWIFT_OBJC_BRIDGING_HEADER: "Sources/P12Bridge.h"
                 CODE_SIGN_IDENTITY: ""
@@ -473,11 +501,10 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY=""
 
-      - name: Fakesign, Inject Native Resolution & Package to IPA
+      - name: Fakesign & Package to IPA
         run: |
           mkdir -p Payload
           cp -r ./build_output/Build/Products/Release-iphoneos/P12Changer.app Payload/
-          /usr/libexec/PlistBuddy -c "Add :UILaunchScreen dict" Payload/P12Changer.app/Info.plist 2>/dev/null || true
           chmod +x Payload/P12Changer.app/P12Changer
           ldid -S Payload/P12Changer.app/P12Changer
           zip -qr P12Changer.ipa Payload
@@ -486,5 +513,5 @@ jobs:
       - name: Upload IPA Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: P12Changer-IPA
+          name: CertPack-v2.0-IPA
           path: P12Changer.ipa
