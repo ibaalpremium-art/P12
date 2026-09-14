@@ -14,7 +14,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Switch to Xcode 15.4 (Stabil untuk Ad-Hoc)
+      - name: Switch to Xcode 15.4
         run: |
           sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
           xcodebuild -version
@@ -24,10 +24,8 @@ jobs:
 
       - name: Auto-Generate Project Files
         run: |
-          # 1. Buat folder Sources dengan benar
           mkdir -p Sources
 
-          # 2. Injeksi kode P12ChangerApp.swift
           cat << 'EOF' > Sources/P12ChangerApp.swift
           import SwiftUI
 
@@ -41,7 +39,6 @@ jobs:
           }
           EOF
 
-          # 3. Injeksi kode ContentView.swift
           cat << 'EOF' > Sources/ContentView.swift
           import SwiftUI
           import UniformTypeIdentifiers
@@ -130,8 +127,8 @@ jobs:
                       self.alertMessage = "Password successfully changed!\nReady to save."
                       self.showAlert = true
                   } catch {
-                          self.alertMessage = "Error processing file: \(error.localizedDescription)"
-                          self.showAlert = true
+                      self.alertMessage = "Error processing file: \(error.localizedDescription)"
+                      self.showAlert = true
                   }
               }
           }
@@ -145,7 +142,6 @@ jobs:
           }
           EOF
 
-          # 4. Injeksi konfigurasi project.yml
           cat << 'EOF' > project.yml
           name: P12Changer
           options:
@@ -163,15 +159,17 @@ jobs:
                 CURRENT_PROJECT_VERSION: "1"
                 SWIFT_VERSION: "5.0"
                 GENERATE_INFOPLIST_FILE: "YES"
+                CODE_SIGN_IDENTITY: ""
+                CODE_SIGNING_REQUIRED: "NO"
+                CODE_SIGNING_ALLOWED: "NO"
           EOF
 
       - name: Generate Xcode Project & Fix Format
         run: |
           xcodegen generate
-          # HACK KUNCI: Turunkan versi format Xcode 16 (77) ke Xcode 15 (63)
           sed -i '' 's/objectVersion = 77;/objectVersion = 63;/g' P12Changer.xcodeproj/project.pbxproj
 
-      - name: Build Application (Ad-Hoc)
+      - name: Build Application (Unsigned)
         run: |
           xcodebuild clean build \
             -project P12Changer.xcodeproj \
@@ -179,17 +177,18 @@ jobs:
             -configuration Release \
             -sdk iphoneos \
             -derivedDataPath ./build_output \
-            CODE_SIGN_IDENTITY="-" \
-            CODE_SIGNING_REQUIRED="YES" \
-            CODE_SIGNING_ALLOWED="YES"
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
 
       - name: Fakesign & Package to IPA
         run: |
           mkdir -p Payload
           cp -r ./build_output/Build/Products/Release-iphoneos/P12Changer.app Payload/
           
-          # Fakesign ldid agar sempurna di TrollStore
-          ldid -S Payload/P12Changer.app
+          # Berikan izin eksekusi dan fakesign binary aplikasi
+          chmod +x Payload/P12Changer.app/P12Changer
+          ldid -S Payload/P12Changer.app/P12Changer
           
           zip -qr P12Changer.ipa Payload
           rm -rf Payload
